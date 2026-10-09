@@ -5,6 +5,7 @@ import json
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -19,6 +20,7 @@ from coldcamera.core.operations import CancellationToken, OperationCancelled
 from coldcamera.core.pipeline_snapshot import PipelineSnapshot
 from coldcamera.effects.descriptors import EFFECT_DESCRIPTORS
 from coldcamera.effects.includes.exposure import ExposureEffect
+from coldcamera.utils.resource_path import resource_path
 
 
 class BackendBoundaryTests(unittest.TestCase):
@@ -30,6 +32,26 @@ class BackendBoundaryTests(unittest.TestCase):
         command = "import sys, coldcamera.application, coldcamera.core.media_service, coldcamera.effects.descriptors; assert not any(name == 'PySide6' or name.startswith('PySide6.') for name in sys.modules)"
         result = subprocess.run([sys.executable, "-c", command], capture_output=True, text=True, check=False, env={**os.environ, "PYTHONPATH": str(Path.cwd())})
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_resource_path_matches_packaged_zoom_asset(self) -> None:
+        source_root = Path(__file__).resolve().parents[1]
+        expected = source_root / "coldcamera" / "resources" / "zoom.png"
+        self.assertTrue(expected.is_file())
+        self.assertEqual(Path(resource_path("coldcamera/resources/zoom.png")), expected)
+
+        with tempfile.TemporaryDirectory() as bundle_root:
+            with patch.object(sys, "_MEIPASS", bundle_root, create=True):
+                bundled = Path(resource_path("/coldcamera/resources/zoom.png"))
+            self.assertEqual(bundled, Path(bundle_root) / "coldcamera" / "resources" / "zoom.png")
+
+    def test_package_and_visible_application_versions_match(self) -> None:
+        source_root = Path(__file__).resolve().parents[1]
+        with (source_root / "pyproject.toml").open("rb") as project_file:
+            project_version = tomllib.load(project_file)["project"]["version"]
+        from coldcamera.config import APPLICATION_VERSION
+
+        self.assertEqual(project_version, APPLICATION_VERSION)
+        self.assertEqual(APPLICATION_VERSION, "0.3.0")
 
     def test_failed_open_preserves_active_media(self) -> None:
         app = self.make_application()

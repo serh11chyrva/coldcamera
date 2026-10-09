@@ -70,7 +70,7 @@ class ViewportWidget(QWidget):
         zoom_layout.setSpacing(2)
 
         zoom_icon = QLabel()
-        zoom_path = resource_path("/application/static/zoom.png")
+        zoom_path = resource_path("coldcamera/resources/zoom.png")
         zoom_icon.setPixmap(QPixmap(zoom_path).scaled(13, 13, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
 
         zoom_layout.addWidget(self.zoom_out_btn)

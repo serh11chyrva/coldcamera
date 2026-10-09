@@ -17,5 +17,3 @@ class ProcessingSettings:
     backend: ProcessingBackend = ProcessingBackend.AUTO
     cache_budget_bytes: int = 512 * 1024 * 1024
     tile_size: int = 256
-
-\n

@@ -10,14 +10,14 @@ a = Analysis(
     pathex=[],
     binaries=pedalboard_bins,
     datas=[
-        ('coldcamera/static/zoom.png', 'coldcamera/static'),
+        ('coldcamera/resources/zoom.png', 'coldcamera/resources'),
     ],
     hiddenimports=[
         "PySide6",
         "PIL",
         "numpy",
         "loguru",
-        "pyqtdarktheme",
+        "qdarktheme",
         "moderngl",
         "cv2",
         "blend_modes",

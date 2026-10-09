@@ -304,5 +304,3 @@ def shutdown_gpu_executor(timeout: float = 2.0) -> None:
         _gpu_executor = None
     if executor is not None:
         executor.shutdown(timeout=timeout)
-
-\n
