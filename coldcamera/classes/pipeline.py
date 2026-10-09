@@ -358,6 +358,12 @@ class ProcessingPipeline:
                     prefix = checkpoint_prefix
                     cursor = checkpoint_position + 1
 
+        # Give the viewport a useful image immediately. For edits, output is the
+        # cached prefix through the effect before first_dirty_index when available;
+        # otherwise it is the original frame. Final tiles progressively replace it.
+        if tile_callback is not None:
+            self._emit_full_frame(tile_callback, np.asarray(output))
+
         while cursor < len(enabled_effects):
             effect_index, effect = enabled_effects[cursor]
             if cancellation is not None:

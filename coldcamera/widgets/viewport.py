@@ -123,9 +123,19 @@ class ViewportWidget(QWidget):
     def update_processed_tile(self, tile: PreviewTile) -> None:
         """Patch a completed preview band into the GUI-owned full-size image."""
 
-        if (tile.x == 0 and tile.y == 0) or self.processed_qimage is None or self.processed_qimage.size() != QSize(tile.full_width, tile.full_height):
+        expected_size = QSize(tile.full_width, tile.full_height)
+        if self.processed_qimage is None:
             self.processed_qimage = QImage(tile.full_width, tile.full_height, QImage.Format.Format_RGBA8888)
             self.processed_qimage.fill(QColor(28, 29, 31, 255))
+        elif self.processed_qimage.size() != expected_size:
+            # A size-changing effect may produce tiles with different dimensions.
+            # Carry the current preview into the new canvas until its tiles arrive.
+            previous = self.processed_qimage
+            self.processed_qimage = QImage(tile.full_width, tile.full_height, QImage.Format.Format_RGBA8888)
+            self.processed_qimage.fill(QColor(28, 29, 31, 255))
+            painter = QPainter(self.processed_qimage)
+            painter.drawImage(self.processed_qimage.rect(), previous, previous.rect())
+            painter.end()
 
         pixels = tile.pixels
         if pixels.ndim != 3 or pixels.shape[2] not in (3, 4):
