@@ -328,11 +328,10 @@ class MainWindow(QMainWindow):
     def _on_frame_processed(self, original: np.ndarray, processed: np.ndarray, frame_index: int, kind: MediaKind) -> None:
         """Convert worker output to Qt display objects on the GUI thread."""
         original_qimage = _numpy_to_qimage(original)
-        existing = self.viewport.processed_qimage
-        if existing is not None and existing.width() == processed.shape[1] and existing.height() == processed.shape[0]:
-            processed_qimage = existing
-        else:
-            processed_qimage = _numpy_to_qimage(processed)
+        # Preview tiles are only an intermediate display. A cache hit or an
+        # early pipeline exit may not have delivered tiles for the final image,
+        # so always commit the worker's authoritative result when it completes.
+        processed_qimage = _numpy_to_qimage(processed)
         if kind == "image":
             self.viewport.original_qimage = original_qimage
             self.viewport.processed_qimage = processed_qimage
