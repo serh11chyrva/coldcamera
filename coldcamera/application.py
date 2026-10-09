@@ -249,12 +249,15 @@ def run_gui() -> None:
 
     import sys
 
+    # Initialize file logging before importing optional GUI dependencies so import
+    # failures in a packaged build are recorded too.
+    app = Application()
+
     import qdarktheme
     from PySide6.QtWidgets import QApplication
 
     from coldcamera.window import MainWindow
 
-    app = Application()
     qt_app = QApplication(sys.argv)
     qdarktheme.setup_theme(custom_colors={"background": "#191a1c", "primary": "#ffffff", "border": "#2a2b2b"})
     window = MainWindow(app)

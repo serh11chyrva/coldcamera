@@ -22,13 +22,16 @@ def get_user_local_directory(paths: dict[str, dict[str, str]] = DEFAULT_PATHS) -
 
     # Determine the user's local application directory
     if os.name == "posix":
-        path = Path(os.path.expanduser(f"~/.{paths[os.name]['application']}/"))
+        path = Path.home() / f".{paths[os.name]['application']}"
     elif os.name == "nt":
-        path = Path(os.path.expanduser(f"C:/Users/{os.getlogin()}/AppData/Local/{paths[os.name]['application']}/"))
+        # LOCALAPPDATA is available in packaged app sessions and does not depend on
+        # os.getlogin(), which can fail when launched from a service or CI account.
+        local_app_data = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+        path = local_app_data / paths[os.name]["application"]
     else:
         path = Path("./")
 
     # Create the log directory if it doesn't exist
-    os.makedirs(path, exist_ok=True)
+    path.mkdir(parents=True, exist_ok=True)
 
     return path
