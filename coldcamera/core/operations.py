@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from threading import Event
+from dataclasses import dataclass
 from typing import Callable
+
+import numpy as np
 
 
 class OperationCancelled(Exception):
@@ -29,6 +32,18 @@ class CancellationToken:
 
 
 ProgressCallback = Callable[[int, int], None]
+PreviewTileCallback = Callable[["PreviewTile"], None]
+
+
+@dataclass(frozen=True)
+class PreviewTile:
+    """A completed preview region and the dimensions of its destination frame."""
+
+    x: int
+    y: int
+    full_width: int
+    full_height: int
+    pixels: np.ndarray
 
 
 def report_progress(callback: ProgressCallback | None, current: int, total: int) -> None:

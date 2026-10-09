@@ -13,8 +13,9 @@ from coldcamera.classes.pipeline import ProcessingPipeline
 from coldcamera.config import APPLICATION_VERSION
 from coldcamera.core.media_service import MediaService
 from coldcamera.core.media_sources import FrameSource, MediaInfo, MediaKind
-from coldcamera.core.operations import CancellationToken, ProgressCallback
+from coldcamera.core.operations import CancellationToken, PreviewTileCallback, ProgressCallback
 from coldcamera.core.pipeline_snapshot import PipelineSnapshot
+from coldcamera.core.processing_settings import ProcessingSettings
 from coldcamera.logger import initialize_logger, logger
 
 
@@ -24,6 +25,7 @@ class ApplicationSnapshot:
 
     media: FrameSource | None
     pipeline: PipelineSnapshot
+    processing: ProcessingSettings = ProcessingSettings()
 
     @property
     def media_info(self) -> MediaInfo | None:
@@ -40,6 +42,7 @@ class Application:
         logger.debug(f"Platform: {platform.system()} {platform.release()} ({platform.architecture()[0]})")
         self._media: FrameSource | None = None
         self._pipeline = PipelineSnapshot.from_pipeline(ProcessingPipeline())
+        self._processing = ProcessingSettings()
         self._current_frame_index = 0
         logger.success("Application is fully initialized!")
 
@@ -62,7 +65,12 @@ class Application:
     def snapshot(self) -> ApplicationSnapshot:
         """Capture media and pipeline references for an isolated task."""
 
-        return ApplicationSnapshot(media=self._media, pipeline=self._pipeline)
+        return ApplicationSnapshot(media=self._media, pipeline=self._pipeline, processing=self._processing)
+
+    def set_processing_settings(self, settings: ProcessingSettings) -> None:
+        """Update machine-local processing preferences without changing presets."""
+
+        self._processing = settings
 
     def set_pipeline(self, pipeline: ProcessingPipeline | PipelineSnapshot) -> None:
         """Replace the active pipeline using a detached serializable snapshot."""
@@ -132,10 +140,22 @@ class Application:
         snapshot: ApplicationSnapshot,
         frame_index: int = 0,
         cancellation: CancellationToken | None = None,
+        tile_callback: PreviewTileCallback | None = None,
+        first_dirty_index: int = 0,
     ) -> tuple[Optional[np.ndarray], Optional[np.ndarray]]:
         if snapshot.media is None:
             return None, None
-        result = MediaService.process_source_frame(snapshot.media, frame_index, snapshot.pipeline, cancellation)
+        result = MediaService.process_source_frame(
+            snapshot.media,
+            frame_index,
+            snapshot.pipeline,
+            cancellation,
+            backend=snapshot.processing.backend,
+            cache_budget_bytes=snapshot.processing.cache_budget_bytes,
+            tile_size=snapshot.processing.tile_size,
+            first_dirty_index=first_dirty_index,
+            tile_callback=tile_callback,
+        )
         return result if result is not None else (None, None)
 
     @staticmethod
@@ -147,7 +167,15 @@ class Application:
     ) -> None:
         if snapshot.media is None or snapshot.media.info.kind != "image":
             raise ValueError("No image loaded to export")
-        MediaService.export_processed_image(snapshot.media, frame_index, snapshot.pipeline, path, cancellation)
+        MediaService.export_processed_image(
+            snapshot.media,
+            frame_index,
+            snapshot.pipeline,
+            path,
+            cancellation,
+            backend=snapshot.processing.backend,
+            cache_budget_bytes=snapshot.processing.cache_budget_bytes,
+        )
         logger.info(f"Image exported: {path}")
 
     @staticmethod
@@ -160,7 +188,15 @@ class Application:
     ) -> None:
         if snapshot.media is None or snapshot.media.info.kind != "gif":
             raise ValueError("No GIF loaded to export")
-        MediaService.export_gif(snapshot.media, snapshot.pipeline, path, progress=progress, cancellation=cancellation)
+        MediaService.export_gif(
+            snapshot.media,
+            snapshot.pipeline,
+            path,
+            progress=progress,
+            cancellation=cancellation,
+            backend=snapshot.processing.backend,
+            cache_budget_bytes=snapshot.processing.cache_budget_bytes,
+        )
         logger.info(f"GIF exported: {path}")
 
     @staticmethod
@@ -173,7 +209,15 @@ class Application:
     ) -> None:
         if snapshot.media is None or snapshot.media.info.kind != "video":
             raise ValueError("No video loaded to export")
-        MediaService.export_video(snapshot.media, snapshot.pipeline, path, progress=progress, cancellation=cancellation)
+        MediaService.export_video(
+            snapshot.media,
+            snapshot.pipeline,
+            path,
+            progress=progress,
+            cancellation=cancellation,
+            backend=snapshot.processing.backend,
+            cache_budget_bytes=snapshot.processing.cache_budget_bytes,
+        )
         logger.info(f"Video exported: {path}")
 
     def save_preset(self, path: str) -> None:

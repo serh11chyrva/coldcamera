@@ -2,7 +2,7 @@ from PySide6.QtCore import QPoint, QSize, Qt, QTimer, Signal
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QListWidget, QListWidgetItem, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 
 from coldcamera.classes.effect import EffectBase
-from coldcamera.classes.pipeline import ProcessingPipeline
+from coldcamera.classes.pipeline import PipelineChange, ProcessingPipeline
 from coldcamera.effects.descriptors import EFFECT_DESCRIPTORS
 from coldcamera.logger import logger
 from coldcamera.widgets.effect import EffectWidget
@@ -23,7 +23,7 @@ class PipelineWidget(QWidget):
                               (effect added / removed / reordered / params changed).
     """
 
-    pipeline_changed = Signal()
+    pipeline_changed = Signal(object)
 
     def __init__(self, pipeline: ProcessingPipeline, parent: QWidget | None = None):
         super().__init__(parent)
@@ -40,6 +40,8 @@ class PipelineWidget(QWidget):
         self._params_change_timer.setSingleShot(True)
         self._params_change_timer.setInterval(50)  # 50ms debounce
         self._params_change_timer.timeout.connect(self._emit_pipeline_changed)
+        self._pending_dirty_index: int | None = None
+        self._pending_change_reason = "changed"
 
         # --- Effects list ---
         self.effects_list = EffectsList()
@@ -153,6 +155,7 @@ class PipelineWidget(QWidget):
         if effect_class is None:
             return
 
+        insert_index = len(self.pipeline.effects)
         effect_widget = EffectWidget.build_from_effect_class(effect_class)
         self._insert_effect_widget(effect_widget)
 
@@ -160,7 +163,7 @@ class PipelineWidget(QWidget):
         self._sync_pipeline_order()
         self._check_placeholder()
         logger.info(f"Effect added: {effect_name}")
-        self.pipeline_changed.emit()
+        self._emit_change(insert_index, "insert")
 
     def add_existing_effect(self, effect: EffectBase) -> EffectWidget:
         """
@@ -191,6 +194,7 @@ class PipelineWidget(QWidget):
             return
 
         widget = self.effects_list.itemWidget(item)
+        dirty_index = current_row
         self.effects_list.takeItem(current_row)
         if widget:
             logger.info(f"Effect removed: {widget.effect.name}")
@@ -199,7 +203,7 @@ class PipelineWidget(QWidget):
 
         self._sync_pipeline_order()
         self._check_placeholder()
-        self.pipeline_changed.emit()
+        self._emit_change(dirty_index, "remove")
 
     def load_pipeline(self, pipeline: ProcessingPipeline) -> None:
         """
@@ -212,6 +216,8 @@ class PipelineWidget(QWidget):
         """
 
         self.pipeline = pipeline
+        self._params_change_timer.stop()
+        self._pending_dirty_index = None
 
         # Tear down existing widgets
         self.effects_list.clear()
@@ -236,7 +242,7 @@ class PipelineWidget(QWidget):
         :param effect_widget: Widget to insert.
         """
 
-        effect_widget.params_changed.connect(self._on_params_changed)
+        effect_widget.params_changed.connect(lambda w=effect_widget: self._on_params_changed(w))
         effect_widget.delete_requested.connect(
             lambda *_args, w=effect_widget: self._delete_effect(w),
         )
@@ -250,6 +256,8 @@ class PipelineWidget(QWidget):
 
     def _delete_effect(self, widget: EffectWidget) -> None:
         """Remove a specific :class:`EffectWidget` by reference."""
+
+        dirty_index = next((i for i, effect in enumerate(self.pipeline.effects) if effect is widget.effect), 0)
 
         for i in range(self.effects_list.count()):
             item = self.effects_list.item(i)
@@ -265,14 +273,19 @@ class PipelineWidget(QWidget):
 
         self._sync_pipeline_order()
         self._check_placeholder()
-        self.pipeline_changed.emit()
+        self._emit_change(dirty_index, "remove")
 
     def _on_rows_moved(self) -> None:
         """Handle drag-and-drop reorder."""
 
+        old_effects = list(self.pipeline.effects)
         self._sync_pipeline_order()
         logger.info(f"Effect order changed: {[effect.name for effect in self.pipeline.effects]}")
-        self.pipeline_changed.emit()
+        first_changed = next(
+            (i for i, (old, new) in enumerate(zip(old_effects, self.pipeline.effects)) if old is not new),
+            min(len(old_effects), len(self.pipeline.effects)),
+        )
+        self._emit_change(first_changed, "reorder")
 
     def _sync_pipeline_order(self) -> None:
         """
@@ -303,11 +316,26 @@ class PipelineWidget(QWidget):
         if isinstance(btn, QPushButton):
             btn.setText("+ Add effect" if has_effects else "+ Add first effect")
 
-    def _on_params_changed(self) -> None:
+    def _on_params_changed(self, effect_widget: EffectWidget) -> None:
         """Bubble up parameter edits as a pipeline change with debouncing."""
-        # Restart the debounce timer
+        try:
+            dirty_index = self.pipeline.effects.index(effect_widget.effect)
+        except ValueError:
+            dirty_index = 0
+        self._record_change(dirty_index, "parameter")
         self._params_change_timer.start()
 
     def _emit_pipeline_changed(self) -> None:
         """Actually emit the pipeline_changed signal after debounce delay."""
-        self.pipeline_changed.emit()
+        self._emit_change(self._pending_dirty_index or 0, self._pending_change_reason)
+
+    def _record_change(self, first_dirty_index: int, reason: str) -> None:
+        if self._pending_dirty_index is None or first_dirty_index < self._pending_dirty_index:
+            self._pending_dirty_index = first_dirty_index
+            self._pending_change_reason = reason
+
+    def _emit_change(self, first_dirty_index: int, reason: str) -> None:
+        self._params_change_timer.stop()
+        self._pending_dirty_index = None
+        self._pending_change_reason = "changed"
+        self.pipeline_changed.emit(PipelineChange(max(0, int(first_dirty_index)), reason))

@@ -9,17 +9,23 @@ import cv2
 import numpy as np
 from PIL import Image, ImageSequence
 
-from coldcamera.classes.pipeline import ProcessingPipeline
+from coldcamera.classes.pipeline import INTERMEDIATE_FRAME_CACHE, ProcessingPipeline
 from coldcamera.core.image_processor import ImageProcessor
 from coldcamera.core.media_sources import FrameSource, MediaKind, MemoryFrameSource, VideoFrameSource
-from coldcamera.core.operations import CancellationToken, ProgressCallback, report_progress
+from coldcamera.core.operations import CancellationToken, PreviewTileCallback, ProgressCallback, report_progress
 from coldcamera.core.pipeline_snapshot import PipelineSnapshot
+from coldcamera.core.processing_settings import ProcessingBackend
+from coldcamera.logger import logger
 
 PipelineInput = ProcessingPipeline | PipelineSnapshot
 
 
 class MediaService:
     """Synchronous media operations with no Qt dependencies."""
+
+    @staticmethod
+    def _source_cache_key(source: FrameSource) -> tuple[str, str]:
+        return str(getattr(source, "cache_id", id(source))), source.info.path
 
     @staticmethod
     def load_image(path: str) -> np.ndarray:
@@ -82,6 +88,12 @@ class MediaService:
         frame_index: int,
         pipeline: PipelineInput,
         cancellation: CancellationToken | None = None,
+        *,
+        backend: ProcessingBackend = ProcessingBackend.AUTO,
+        cache_budget_bytes: int = 512 * 1024 * 1024,
+        tile_size: int = 256,
+        first_dirty_index: int = 0,
+        tile_callback: PreviewTileCallback | None = None,
     ) -> tuple[np.ndarray, np.ndarray] | None:
         if cancellation is not None:
             cancellation.raise_if_cancelled()
@@ -92,7 +104,30 @@ class MediaService:
         runtime_pipeline = cls._pipeline_for_operation(pipeline)
         if cancellation is not None:
             cancellation.raise_if_cancelled()
-        processed = ImageProcessor.process_frame(runtime_pipeline, original.copy())
+        INTERMEDIATE_FRAME_CACHE.set_budget(cache_budget_bytes)
+        processed = ImageProcessor.process_frame(
+            runtime_pipeline,
+            original,
+            cache_namespace=cls._source_cache_key(source),
+            frame_index=frame_index,
+            backend=backend,
+            cancellation=cancellation,
+            tile_callback=tile_callback,
+            first_dirty_index=first_dirty_index,
+            tile_size=tile_size,
+        )
+        for metric in runtime_pipeline.last_metrics:
+            logger.debug(
+                f"Processing stage: effect={metric.effect_name}, elapsed_ms={metric.elapsed_ms:.2f}, "
+                f"output_bytes={metric.output_bytes}, estimated_working_set_bytes={metric.estimated_working_set_bytes}"
+            )
+        if runtime_pipeline.last_metrics:
+            logger.debug(
+                f"Processing buffers: estimated_peak_bytes={runtime_pipeline.estimated_peak_working_bytes}, "
+                f"cache_used_bytes={INTERMEDIATE_FRAME_CACHE.used_bytes}"
+            )
+        if runtime_pipeline.last_gpu_fallback_effects:
+            logger.debug(f"CPU fallback effects: {', '.join(runtime_pipeline.last_gpu_fallback_effects)}")
         if processed is None:
             return None
         return original, ImageProcessor.ensure_rgba(processed)
@@ -116,8 +151,18 @@ class MediaService:
         pipeline: PipelineInput,
         path: str,
         cancellation: CancellationToken | None = None,
+        *,
+        backend: ProcessingBackend = ProcessingBackend.AUTO,
+        cache_budget_bytes: int = 512 * 1024 * 1024,
     ) -> None:
-        result = cls.process_source_frame(source, frame_index, pipeline, cancellation)
+        result = cls.process_source_frame(
+            source,
+            frame_index,
+            pipeline,
+            cancellation,
+            backend=backend,
+            cache_budget_bytes=cache_budget_bytes,
+        )
         if result is None:
             raise ValueError("No image frame is available to export")
         if cancellation is not None:
@@ -134,8 +179,11 @@ class MediaService:
         fps: int | None = None,
         progress: ProgressCallback | None = None,
         cancellation: CancellationToken | None = None,
+        backend: ProcessingBackend = ProcessingBackend.AUTO,
+        cache_budget_bytes: int = 512 * 1024 * 1024,
     ) -> None:
         runtime_pipeline = cls._pipeline_for_operation(pipeline)
+        INTERMEDIATE_FRAME_CACHE.set_budget(cache_budget_bytes)
         processed_frames: list[Image.Image] = []
         total = source.info.frame_count
 
@@ -143,7 +191,14 @@ class MediaService:
             for current, (_index, frame) in enumerate(reader.iter_frames(), start=1):
                 if cancellation is not None:
                     cancellation.raise_if_cancelled()
-                processed = ImageProcessor.process_frame(runtime_pipeline, frame)
+                processed = ImageProcessor.process_frame(
+                    runtime_pipeline,
+                    frame,
+                    cache_namespace=cls._source_cache_key(source),
+                    frame_index=_index,
+                    backend=backend,
+                    cancellation=cancellation,
+                )
                 if processed is not None:
                     if processed.ndim != 3 or processed.shape[2] not in (3, 4):
                         raise ValueError(f"Unsupported channel count: {processed.shape[-1] if processed.ndim else 0}")
@@ -171,8 +226,11 @@ class MediaService:
         *,
         progress: ProgressCallback | None = None,
         cancellation: CancellationToken | None = None,
+        backend: ProcessingBackend = ProcessingBackend.AUTO,
+        cache_budget_bytes: int = 512 * 1024 * 1024,
     ) -> None:
         runtime_pipeline = cls._pipeline_for_operation(pipeline)
+        INTERMEDIATE_FRAME_CACHE.set_budget(cache_budget_bytes)
         total = source.info.frame_count
         writer = None
         processed_count = 0
@@ -190,7 +248,14 @@ class MediaService:
                         if not writer.isOpened():
                             raise OSError(f"Cannot open video output: {path}")
 
-                    processed = ImageProcessor.process_frame(runtime_pipeline, rgba_frame)
+                    processed = ImageProcessor.process_frame(
+                        runtime_pipeline,
+                        rgba_frame,
+                        cache_namespace=cls._source_cache_key(source),
+                        frame_index=current - 1,
+                        backend=backend,
+                        cancellation=cancellation,
+                    )
                     if processed is None:
                         continue
                     if processed.shape[2] == 4:

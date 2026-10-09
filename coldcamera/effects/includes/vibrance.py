@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 
-from coldcamera.classes.effect import EffectBase
+from coldcamera.classes.effect import EffectBase, EffectCapabilities
 from coldcamera.classes.parameter import EffectParam
 from coldcamera.types import Processable
 
@@ -47,3 +47,6 @@ class VibranceEffect(EffectBase):
         processed_rgb = cv2.cvtColor(processed_hsv, cv2.COLOR_HSV2RGB)
 
         return (processed_rgb * 255).astype(np.uint8)
+
+    def get_execution_capabilities(self) -> EffectCapabilities:
+        return EffectCapabilities(locality="pointwise")

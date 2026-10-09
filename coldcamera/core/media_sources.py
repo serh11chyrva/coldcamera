@@ -6,6 +6,7 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, Literal, Protocol
+from uuid import uuid4
 
 import cv2
 import numpy as np
@@ -75,6 +76,7 @@ class MemoryFrameSource:
             raise ValueError("A media source must contain at least one frame")
         # Own the buffers so snapshots stay stable if the caller later reuses its arrays.
         self._frames = tuple(frame.copy() for frame in frames)
+        self.cache_id = uuid4().hex
         self._info = MediaInfo(path=path, kind=kind, frame_count=len(self._frames), fps=max(1, int(fps)))
 
     @property
@@ -135,6 +137,7 @@ class VideoFrameSource:
         fps_value = capture.get(cv2.CAP_PROP_FPS) or 25
         capture.release()
         self._path = str(Path(path))
+        self.cache_id = uuid4().hex
         self._info = MediaInfo(path=self._path, kind="video", frame_count=frame_count, fps=max(1, int(fps_value)))
 
     @property

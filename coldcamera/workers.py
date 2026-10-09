@@ -7,10 +7,21 @@ from typing import Any, Callable
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Slot
 
-from coldcamera.core.operations import CancellationToken, OperationCancelled, ProgressCallback
+from coldcamera.core.operations import CancellationToken, OperationCancelled, PreviewTile, ProgressCallback
 from coldcamera.logger import logger
 
 BackendTask = Callable[[CancellationToken, ProgressCallback], Any]
+
+
+class TaskReporter:
+    """Callable progress reporter with an optional preview-tile channel."""
+
+    def __init__(self, progress: ProgressCallback, preview: Callable[[PreviewTile], None]) -> None:
+        self._progress = progress
+        self.preview = preview
+
+    def __call__(self, current: int, total: int) -> None:
+        self._progress(current, total)
 
 
 class _TaskSignals(QObject):
@@ -18,6 +29,7 @@ class _TaskSignals(QObject):
     result = Signal(str, object)
     error = Signal(str, str)
     progress = Signal(str, int, int)
+    preview = Signal(str, object)
     cancelled = Signal(str)
     finished = Signal(str)
 
@@ -36,7 +48,11 @@ class _TaskWorker(QRunnable):
         try:
             self.cancellation.raise_if_cancelled()
             self.signals.started.emit(self.task_id)
-            result = self.task(self.cancellation, lambda current, total: self.signals.progress.emit(self.task_id, current, total))
+            reporter = TaskReporter(
+                lambda current, total: self.signals.progress.emit(self.task_id, current, total),
+                lambda tile: self.signals.preview.emit(self.task_id, tile),
+            )
+            result = self.task(self.cancellation, reporter)
             self.cancellation.raise_if_cancelled()
             self.signals.result.emit(self.task_id, result)
         except OperationCancelled:
@@ -55,6 +71,7 @@ class QtTaskRunner(QObject):
     result = Signal(str, object)
     error = Signal(str, str)
     progress = Signal(str, int, int)
+    preview = Signal(str, object)
     cancelled = Signal(str)
     finished = Signal(str)
 
@@ -73,6 +90,7 @@ class QtTaskRunner(QObject):
         worker.signals.result.connect(self.result)
         worker.signals.error.connect(self.error)
         worker.signals.progress.connect(self.progress)
+        worker.signals.preview.connect(self.preview)
         worker.signals.cancelled.connect(self.cancelled)
         worker.signals.finished.connect(self._task_finished)
         self._cancellations[task_id] = cancellation

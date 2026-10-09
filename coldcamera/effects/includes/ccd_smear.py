@@ -1,9 +1,7 @@
-import random
-
 import cv2
 import numpy as np
 
-from coldcamera.classes.effect import EffectBase
+from coldcamera.classes.effect import EffectBase, EffectCapabilities
 from coldcamera.classes.parameter import EffectParam
 from coldcamera.types import Processable
 
@@ -45,6 +43,7 @@ class CCDSmearEffect(EffectBase):
         )
         smear_falloff = self.get_parameter("smear_falloff")
         use_mask = self.get_parameter("use_mask")
+        rng = self.random_generator()
 
         img_gray = cv2.cvtColor(img_rgb.astype(np.uint8), cv2.COLOR_RGB2GRAY)
         _, bright_pixels_mask = cv2.threshold(img_gray, threshold, 255, cv2.THRESH_BINARY)
@@ -65,10 +64,10 @@ class CCDSmearEffect(EffectBase):
                 smear_col *= falloff_mask.reshape(h, 1)
 
                 if use_mask:
-                    angle = random.uniform(0, np.pi)
+                    angle = rng.uniform(0, np.pi)
                     cos_a, sin_a = np.cos(angle), np.sin(angle)
                     y_coords_norm = np.linspace(-1, 1, h).reshape(-1, 1)
-                    gradient = np.abs(y_coords_norm * sin_a + (random.random() * 2 - 1) * cos_a * 0.1)
+                    gradient = np.abs(y_coords_norm * sin_a + rng.uniform(-1, 1) * cos_a * 0.1)
                     gradient = np.clip(1 - gradient, 0, 1)
                     smear_col *= gradient
 
@@ -76,3 +75,6 @@ class CCDSmearEffect(EffectBase):
 
         processed_img = np.clip(img_rgb + smear_layer, 0, 255).astype(np.uint8)
         return processed_img
+
+    def get_execution_capabilities(self) -> EffectCapabilities:
+        return EffectCapabilities(locality="full_frame", stochastic=True)

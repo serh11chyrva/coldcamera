@@ -1,7 +1,7 @@
 import blend_modes as bm
 import numpy as np
 
-from coldcamera.classes.effect import EffectBase
+from coldcamera.classes.effect import EffectBase, EffectCapabilities
 from coldcamera.classes.parameter import EffectParam
 from coldcamera.types import Processable
 from coldcamera.utils.add_alpha_channel import add_alpha_channel
@@ -28,26 +28,27 @@ class NoiseEffect(EffectBase):
             return img.astype(np.uint8)
 
         h, w = img.shape[:2]
+        rng = self.random_generator()
         noise_rgb = np.zeros((h, w, 3), dtype=np.float32)
         noise_type = self.get_parameter("type")
 
         if noise_type == "gaussian":
-            noise_rgb = np.random.normal(0, noise_param, (h, w, 3)).astype(np.float32)
+            noise_rgb = rng.normal(0, noise_param, (h, w, 3)).astype(np.float32)
         elif noise_type == "salt":
             density = np.clip(noise_param / 100.0, 0.0, 1.0)
             num_pixels = int(density * h * w)
-            row_coords = np.random.randint(0, h, num_pixels)
-            col_coords = np.random.randint(0, w, num_pixels)
+            row_coords = rng.integers(0, h, num_pixels)
+            col_coords = rng.integers(0, w, num_pixels)
             noise_rgb[row_coords, col_coords, :] = 255
         elif noise_type == "pepper":
             density = np.clip(noise_param / 100.0, 0.0, 1.0)
             num_pixels = int(density * h * w)
-            row_coords = np.random.randint(0, h, num_pixels)
-            col_coords = np.random.randint(0, w, num_pixels)
+            row_coords = rng.integers(0, h, num_pixels)
+            col_coords = rng.integers(0, w, num_pixels)
             noise_rgb[row_coords, col_coords, :] = 0
         elif noise_type == "speckle":
             speckle_strength = noise_param / 255.0
-            random_factor = np.random.normal(0, speckle_strength, (h, w, 3)).astype(np.float32)
+            random_factor = rng.normal(0, speckle_strength, (h, w, 3)).astype(np.float32)
             noise_rgb = img[..., :3] * random_factor
 
         noise_rgba = add_alpha_channel(noise_rgb)
@@ -57,3 +58,6 @@ class NoiseEffect(EffectBase):
         blend_func = getattr(bm, self.get_parameter("blend_mode"), bm.normal)
         blended = blend_func(bg, fg, self.get_parameter("opacity"))
         return (blended * 255).astype(np.uint8)
+
+    def get_execution_capabilities(self) -> EffectCapabilities:
+        return EffectCapabilities(locality="full_frame", stochastic=True)

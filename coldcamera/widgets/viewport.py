@@ -1,8 +1,9 @@
-from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QImage, QMouseEvent, QPainter, QPen, QPixmap, QWheelEvent
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 
 from coldcamera.utils.resource_path import resource_path
+from coldcamera.core.operations import PreviewTile
 
 
 class ViewportWidget(QWidget):
@@ -117,6 +118,27 @@ class ViewportWidget(QWidget):
         self.image = qimage
         if qimage:
             self.size_label.setText(f"{qimage.width()}x{qimage.height()}")
+        self.update()
+
+    def update_processed_tile(self, tile: PreviewTile) -> None:
+        """Patch a completed preview band into the GUI-owned full-size image."""
+
+        if (tile.x == 0 and tile.y == 0) or self.processed_qimage is None or self.processed_qimage.size() != QSize(tile.full_width, tile.full_height):
+            self.processed_qimage = QImage(tile.full_width, tile.full_height, QImage.Format.Format_RGBA8888)
+            self.processed_qimage.fill(QColor(28, 29, 31, 255))
+
+        pixels = tile.pixels
+        if pixels.ndim != 3 or pixels.shape[2] not in (3, 4):
+            return
+        fmt = QImage.Format.Format_RGBA8888 if pixels.shape[2] == 4 else QImage.Format.Format_RGB888
+        patch = QImage(pixels.data, pixels.shape[1], pixels.shape[0], pixels.strides[0], fmt).copy()
+        painter = QPainter(self.processed_qimage)
+        painter.drawImage(tile.x, tile.y, patch)
+        painter.end()
+
+        if not self.showing_original:
+            self.image = self.processed_qimage
+        self.size_label.setText(f"{tile.full_width}x{tile.full_height}")
         self.update()
 
     # -------------------

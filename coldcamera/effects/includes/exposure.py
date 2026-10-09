@@ -1,6 +1,6 @@
 import numpy as np
 
-from coldcamera.classes.effect import EffectBase
+from coldcamera.classes.effect import EffectBase, EffectCapabilities, GPUShaderPass
 from coldcamera.classes.parameter import EffectParam
 from coldcamera.types import Processable
 
@@ -19,3 +19,12 @@ class ExposureEffect(EffectBase):
         img *= self.get_parameter("exposure")
         img = np.clip(img, 0, 255)
         return img.astype(np.uint8)
+
+    def get_execution_capabilities(self) -> EffectCapabilities:
+        return EffectCapabilities(locality="pointwise", supported_backends=frozenset({"cpu", "gpu"}))
+
+    def get_gpu_pass(self) -> GPUShaderPass:
+        return GPUShaderPass(
+            uniforms={"uExposure": float(self.get_parameter("exposure"))},
+            expression="color = clamp(color * uExposure, 0.0, 1.0);",
+        )

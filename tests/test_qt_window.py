@@ -14,6 +14,7 @@ from PySide6.QtCore import QEventLoop, QTimer
 from PySide6.QtWidgets import QApplication
 
 from coldcamera.application import Application
+from coldcamera.core.processing_settings import ProcessingBackend, ProcessingSettings
 from coldcamera.window import MainWindow
 
 
@@ -53,6 +54,35 @@ class QtWindowTests(unittest.TestCase):
             self.assertIsNotNone(window.viewport.processed_qimage)
             self.assertEqual(window.viewport.processed_qimage.width(), 4)
             self.assertEqual(window.statusBar().currentMessage(), f"Image opened: {image_path}")
+            window.close()
+
+    def test_full_resolution_cpu_preview_updates_viewport_by_bands(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            image_path = Path(temp_dir) / "large.png"
+            Image.fromarray(np.full((600, 600, 4), 90, dtype=np.uint8)).save(image_path)
+            with patch("coldcamera.application.initialize_logger"):
+                app = Application()
+            window = MainWindow(app)
+            app.set_processing_settings(ProcessingSettings(backend=ProcessingBackend.CPU))
+            window.pipeline_widget.add_effect("Exposure")
+            loop = QEventLoop()
+            timer = QTimer()
+            timer.setInterval(20)
+
+            def check_complete() -> None:
+                if window._active_preview_task is None and window.viewport.processed_qimage is not None:
+                    loop.quit()
+
+            timer.timeout.connect(check_complete)
+            timer.start()
+            with patch.object(window.viewport, "update_processed_tile", wraps=window.viewport.update_processed_tile) as tile_updates:
+                window._start_load(str(image_path), "image")
+                QTimer.singleShot(10_000, loop.quit)
+                loop.exec()
+                self.assertGreaterEqual(tile_updates.call_count, 3)
+            timer.stop()
+            self.assertEqual(window.viewport.processed_qimage.width(), 600)
+            self.assertEqual(window.viewport.processed_qimage.height(), 600)
             window.close()
 
 

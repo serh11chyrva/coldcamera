@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 
-from coldcamera.classes.effect import EffectBase
+from coldcamera.classes.effect import EffectBase, EffectCapabilities
 from coldcamera.classes.parameter import EffectParam
 from coldcamera.types import Processable
 
@@ -32,3 +32,7 @@ class SharpenEffect(EffectBase):
 
         sharpened = np.clip(sharpened, 0, 255)
         return sharpened.astype(np.uint8)
+
+    def get_execution_capabilities(self) -> EffectCapabilities:
+        radius = max(0, int(self.get_parameter("radius")) // 2)
+        return EffectCapabilities(locality="local", halo_x=radius, halo_y=radius)

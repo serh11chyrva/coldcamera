@@ -17,11 +17,12 @@ from itertools import count
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
-from PySide6.QtCore import QElapsedTimer, QTimer, Qt
+from PySide6.QtCore import QElapsedTimer, QSettings, QTimer, Qt
 from PySide6.QtGui import QAction, QImage
 from PySide6.QtWidgets import (
     QFileDialog,
     QFrame,
+    QDialog,
     QMainWindow,
     QSplitter,
     QStatusBar,
@@ -30,11 +31,14 @@ from PySide6.QtWidgets import (
 )
 
 from coldcamera.config import APPLICATION_VERSION
-from coldcamera.classes.pipeline import ProcessingPipeline
+from coldcamera.classes.pipeline import INTERMEDIATE_FRAME_CACHE, PipelineChange, ProcessingPipeline
 from coldcamera.core.media_sources import MediaKind
+from coldcamera.core.operations import PreviewTile
 from coldcamera.core.pipeline_snapshot import PipelineSnapshot
+from coldcamera.core.processing_settings import ProcessingBackend, ProcessingSettings
 from coldcamera.logger import logger
 from coldcamera.widgets.pipeline import PipelineWidget
+from coldcamera.widgets.processing_settings_dialog import ProcessingSettingsDialog
 from coldcamera.widgets.progress_dialog import ProgressDialog
 from coldcamera.widgets.viewport import ViewportWidget
 from coldcamera.workers import QtTaskRunner
@@ -92,6 +96,13 @@ class MainWindow(QMainWindow):
     def __init__(self, app: Application) -> None:
         super().__init__()
         self.app = app
+        self._settings_store = QSettings("ColdCamera", "ColdCamera")
+        try:
+            backend = ProcessingBackend(self._settings_store.value("processing/backend", ProcessingBackend.AUTO.value))
+        except ValueError:
+            backend = ProcessingBackend.AUTO
+        self.app.set_processing_settings(ProcessingSettings(backend=backend))
+        INTERMEDIATE_FRAME_CACHE.set_budget(512 * 1024 * 1024)
 
         # --- Window chrome ---
         self.setWindowTitle(f"coldcamera v{APPLICATION_VERSION}")
@@ -112,6 +123,7 @@ class MainWindow(QMainWindow):
         self._tasks.result.connect(self._on_task_result)
         self._tasks.error.connect(self._on_task_error)
         self._tasks.progress.connect(self._on_task_progress)
+        self._tasks.preview.connect(self._on_preview_tile)
         self._tasks.cancelled.connect(self._on_task_cancelled)
         self._tasks.finished.connect(self._on_task_finished)
 
@@ -188,6 +200,11 @@ class MainWindow(QMainWindow):
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
 
+        settings_menu = menubar.addMenu("&Edit")
+        processing_action = QAction("Processing settings...", self)
+        processing_action.triggered.connect(self._open_processing_settings)
+        settings_menu.addAction(processing_action)
+
     def _setup_statusbar(self) -> None:
         statusbar = QStatusBar()
         statusbar.setStyleSheet("background-color: #191a1c;")
@@ -230,10 +247,10 @@ class MainWindow(QMainWindow):
     # Signal handlers  (pipeline / viewport → process & display)
     # ==================================================================
 
-    def _on_pipeline_changed(self) -> None:
+    def _on_pipeline_changed(self, change: PipelineChange | None = None) -> None:
         """Re-process and display when any pipeline parameter changes."""
         self.app.set_pipeline(self.pipeline_widget.pipeline)
-        self._process_and_display()
+        self._process_and_display(change=change)
 
     def _on_frame_request(self, frame_index: int) -> None:
         """Re-process and display for the requested *frame_index*."""
@@ -243,7 +260,7 @@ class MainWindow(QMainWindow):
     # Core display loop
     # ==================================================================
 
-    def _process_and_display(self, frame_index: int | None = None) -> None:
+    def _process_and_display(self, frame_index: int | None = None, change: PipelineChange | None = None) -> None:
         snapshot = self._capture_snapshot()
         if snapshot.media is None:
             return
@@ -259,12 +276,48 @@ class MainWindow(QMainWindow):
 
         task_id = self._new_task_id("preview")
         self._active_preview_task = task_id
-        self._task_kinds[task_id] = ("preview", generation, self._current_frame_index, snapshot.media_info)
+        first_dirty_index = change.first_dirty_index if change is not None else 0
+        preview_pipeline = snapshot.pipeline.build_pipeline()
+        cpu_fallbacks = tuple(effect.name for effect in preview_pipeline.effects if effect.enabled and not effect.supports_gpu())
+        self._task_kinds[task_id] = (
+            "preview",
+            generation,
+            self._current_frame_index,
+            snapshot.media_info,
+            first_dirty_index,
+            snapshot.processing.backend,
+            cpu_fallbacks,
+        )
         application = self.app
         self._tasks.submit(
             task_id,
-            lambda cancellation, _progress, snap=snapshot, index=self._current_frame_index, app=application: app.process_snapshot(snap, index, cancellation),
+            lambda cancellation, reporter, snap=snapshot, index=self._current_frame_index, app=application, dirty=first_dirty_index: app.process_snapshot(
+                snap,
+                index,
+                cancellation,
+                tile_callback=reporter.preview,
+                first_dirty_index=dirty,
+            ),
         )
+
+    def _on_preview_tile(self, task_id: str, tile: PreviewTile) -> None:
+        task_context = self._task_kinds.get(task_id)
+        if task_context is None or task_context[0] != "preview":
+            return
+        if task_id != self._active_preview_task or task_context[1] != self._active_preview_generation:
+            return
+        self.viewport.update_processed_tile(tile)
+
+    def _open_processing_settings(self) -> None:
+        current = self.app.snapshot().processing
+        dialog = ProcessingSettingsDialog(current.backend, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        settings = ProcessingSettings(backend=dialog.backend)
+        self.app.set_processing_settings(settings)
+        self._settings_store.setValue("processing/backend", settings.backend.value)
+        INTERMEDIATE_FRAME_CACHE.set_budget(settings.cache_budget_bytes)
+        self._process_and_display(change=PipelineChange(0, "backend"))
 
     def _capture_snapshot(self):
         """Synchronize the latest editor draft before creating a task snapshot."""
@@ -275,7 +328,11 @@ class MainWindow(QMainWindow):
     def _on_frame_processed(self, original: np.ndarray, processed: np.ndarray, frame_index: int, kind: MediaKind) -> None:
         """Convert worker output to Qt display objects on the GUI thread."""
         original_qimage = _numpy_to_qimage(original)
-        processed_qimage = _numpy_to_qimage(processed)
+        existing = self.viewport.processed_qimage
+        if existing is not None and existing.width() == processed.shape[1] and existing.height() == processed.shape[0]:
+            processed_qimage = existing
+        else:
+            processed_qimage = _numpy_to_qimage(processed)
         if kind == "image":
             self.viewport.original_qimage = original_qimage
             self.viewport.processed_qimage = processed_qimage
@@ -373,7 +430,7 @@ class MainWindow(QMainWindow):
                 self.viewport.set_playback(media_info.frame_count, media_info.fps)
             self.statusBar().showMessage(f"{media_info.kind.capitalize()} opened: {media_info.path}")
         elif kind == "preview":
-            _kind, generation, frame_index, media_info = task_context
+            _kind, generation, frame_index, media_info = task_context[:4]
             if task_id != self._active_preview_task or generation != self._active_preview_generation or media_info is None:
                 return
             self._stop_render_status(task_id)
@@ -381,6 +438,18 @@ class MainWindow(QMainWindow):
             if result is not None:
                 original, processed = result
                 self._on_frame_processed(original, processed, frame_index, media_info.kind)
+                backend = task_context[5] if len(task_context) > 5 else ProcessingBackend.AUTO
+                fallback_effects = task_context[6] if len(task_context) > 6 else ()
+                if backend != ProcessingBackend.CPU:
+                    from coldcamera.core.gpu import peek_gpu_executor
+
+                    gpu_executor = peek_gpu_executor()
+                    if gpu_executor is not None and gpu_executor.context_error:
+                        self.statusBar().showMessage("GPU is unavailable; CPU fallback was used")
+                    elif gpu_executor is not None and gpu_executor.last_error:
+                        self.statusBar().showMessage("A GPU shader failed; CPU fallback was used")
+                    elif fallback_effects:
+                        self.statusBar().showMessage(f"CPU fallback: {', '.join(fallback_effects)}")
             elif media_info.kind != "image":
                 self.viewport.finish_frame_request()
         elif kind == "export-image":
@@ -616,7 +685,12 @@ class MainWindow(QMainWindow):
         """Cancel backend tasks before the GUI is destroyed."""
         self._stop_render_status()
         self._tasks.cancel_all()
-        self._tasks.wait_for_done(2000)
+        tasks_stopped = self._tasks.wait_for_done(2000)
+        from coldcamera.core.gpu import shutdown_gpu_executor
+
+        # If a long native effect has not returned yet, queue context teardown
+        # behind accepted GL work and let the executor thread release it later.
+        shutdown_gpu_executor(timeout=2.0 if tasks_stopped else 0.0)
         if not self._close_logged:
             logger.info("Application window closed")
             self._close_logged = True

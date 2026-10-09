@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 
-from coldcamera.classes.effect import EffectBase
+from coldcamera.classes.effect import EffectBase, EffectCapabilities
 from coldcamera.classes.parameter import EffectParam
 from coldcamera.types import Processable
 
@@ -31,11 +31,12 @@ class FilmGrainEffect(EffectBase):
             return img.astype(np.uint8)
 
         actual_strength = strength / 100.0 * 50.0
+        rng = self.random_generator()
 
         if color_grain:
-            noise = np.random.normal(0, actual_strength, (h, w, c)).astype(np.float32)
+            noise = rng.normal(0, actual_strength, (h, w, c)).astype(np.float32)
         else:
-            noise_mono = np.random.normal(0, actual_strength, (h, w, 1)).astype(np.float32)
+            noise_mono = rng.normal(0, actual_strength, (h, w, 1)).astype(np.float32)
             noise = np.tile(noise_mono, (1, 1, c))
 
         if size > 0.0:
@@ -44,9 +45,9 @@ class FilmGrainEffect(EffectBase):
             scaled_w = max(1, w // downscale_factor)
 
             if color_grain:
-                scaled_noise = np.random.normal(0, actual_strength, (scaled_h, scaled_w, c)).astype(np.float32)
+                scaled_noise = rng.normal(0, actual_strength, (scaled_h, scaled_w, c)).astype(np.float32)
             else:
-                scaled_noise_mono = np.random.normal(0, actual_strength, (scaled_h, scaled_w, 1)).astype(np.float32)
+                scaled_noise_mono = rng.normal(0, actual_strength, (scaled_h, scaled_w, 1)).astype(np.float32)
                 scaled_noise = np.tile(scaled_noise_mono, (1, 1, c))
 
             upscaled_noise = cv2.resize(scaled_noise, (w, h), interpolation=cv2.INTER_CUBIC)
@@ -61,3 +62,6 @@ class FilmGrainEffect(EffectBase):
         processed_img = np.clip(img + noise, 0, 255).astype(np.uint8)
 
         return processed_img
+
+    def get_execution_capabilities(self) -> EffectCapabilities:
+        return EffectCapabilities(locality="full_frame", stochastic=True)

@@ -1,10 +1,43 @@
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from typing import Literal
 from typing import Any, Dict
 
 from coldcamera.classes.parameter import EffectParam
 from coldcamera.classes.parameters_manager import EffectParamManager
+from coldcamera.core.processing_settings import ProcessingBackend
 from coldcamera.exceptions import NotImplementedEffect
 from coldcamera.types import Processable
+
+
+EffectLocality = Literal["pointwise", "local", "full_frame"]
+EffectBackend = Literal["cpu", "gpu"]
+
+
+@dataclass(frozen=True)
+class EffectCapabilities:
+    """Execution hints used by the pipeline without changing an effect's CPU API."""
+
+    locality: EffectLocality = "full_frame"
+    halo_x: int = 0
+    halo_y: int = 0
+    preserves_size: bool = True
+    stochastic: bool = False
+    supported_backends: frozenset[EffectBackend] = frozenset({"cpu"})
+
+    @property
+    def tileable(self) -> bool:
+        return self.locality in {"pointwise", "local"} and self.preserves_size
+
+
+@dataclass(frozen=True)
+class GPUShaderPass:
+    """A shader pass that can be run by the shared GL executor."""
+
+    uniforms: dict[str, float | int | bool] = field(default_factory=dict)
+    expression: str | None = None
+    fragment_shader: str | None = None
+    pointwise: bool = True
 
 
 class EffectBase(ABC):
@@ -30,6 +63,37 @@ class EffectBase(ABC):
         self.params = EffectParamManager(params)
 
         self.enabled = True
+        self._execution_seed: int | None = None
+
+    def get_execution_capabilities(self) -> EffectCapabilities:
+        """Describe safe execution strategies; unknown effects stay whole-frame."""
+
+        return EffectCapabilities()
+
+    def set_execution_seed(self, seed: int | None) -> None:
+        """Set a stable per-frame seed for stochastic effects."""
+
+        self._execution_seed = seed
+
+    def random_generator(self):
+        """Return this operation's deterministic generator when a seed was assigned."""
+
+        import numpy as np
+
+        return np.random.default_rng(self._execution_seed)
+
+    def get_gpu_pass(self) -> GPUShaderPass | None:
+        """Return an optional GPU implementation, or ``None`` for CPU fallback."""
+
+        return None
+
+    def supports_gpu(self) -> bool:
+        return self.get_gpu_pass() is not None
+
+    def apply_with_backend(self, input_data: Processable, backend: ProcessingBackend) -> Processable:
+        """Apply through the requested backend, defaulting to the CPU reference."""
+
+        return self.apply(input_data)
 
     @abstractmethod
     def apply(self, input_data: Processable) -> Processable:

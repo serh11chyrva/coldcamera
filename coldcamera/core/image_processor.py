@@ -4,6 +4,8 @@ import cv2
 import numpy as np
 
 from coldcamera.classes.pipeline import ProcessingPipeline
+from coldcamera.core.operations import CancellationToken, PreviewTile, PreviewTileCallback
+from coldcamera.core.processing_settings import ProcessingBackend
 
 
 class ImageProcessor:
@@ -41,7 +43,19 @@ class ImageProcessor:
         return arr
 
     @classmethod
-    def process_frame(cls, pipeline: ProcessingPipeline, frame: np.ndarray) -> Optional[np.ndarray]:
+    def process_frame(
+        cls,
+        pipeline: ProcessingPipeline,
+        frame: np.ndarray,
+        *,
+        cache_namespace: object | None = None,
+        frame_index: int = 0,
+        backend: ProcessingBackend = ProcessingBackend.AUTO,
+        cancellation: CancellationToken | None = None,
+        tile_callback: PreviewTileCallback | None = None,
+        first_dirty_index: int = 0,
+        tile_size: int = 256,
+    ) -> Optional[np.ndarray]:
         """
         Apply the pipeline to a single NumPy frame.
 
@@ -53,8 +67,26 @@ class ImageProcessor:
         if frame is None:
             return None
 
-        if len(pipeline.effects) == 0:
-            return frame.copy()
+        def rgba_tile(tile: PreviewTile) -> None:
+            if tile_callback is None:
+                return
+            pixels = cls.ensure_rgba(cls.ensure_uint8(tile.pixels))
+            tile_callback(PreviewTile(tile.x, tile.y, tile.full_width, tile.full_height, np.ascontiguousarray(pixels)))
 
-        result = pipeline.apply_once(frame)
+        if len(pipeline.effects) == 0:
+            result = frame.copy()
+            if tile_callback is not None:
+                rgba_tile(PreviewTile(0, 0, result.shape[1], result.shape[0], result))
+            return result
+
+        result = pipeline.apply_once(
+            frame,
+            cache_namespace=cache_namespace,
+            frame_index=frame_index,
+            backend=backend,
+            cancellation=cancellation,
+            tile_callback=rgba_tile if tile_callback is not None else None,
+            first_dirty_index=first_dirty_index,
+            tile_size=tile_size,
+        )
         return cls.ensure_uint8(result)

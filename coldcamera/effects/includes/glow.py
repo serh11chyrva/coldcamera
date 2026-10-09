@@ -2,7 +2,7 @@ import blend_modes as bm
 import cv2
 import numpy as np
 
-from coldcamera.classes.effect import EffectBase
+from coldcamera.classes.effect import EffectBase, EffectCapabilities
 from coldcamera.classes.parameter import EffectParam
 from coldcamera.types import Processable
 from coldcamera.utils.add_alpha_channel import add_alpha_channel
@@ -52,3 +52,7 @@ class GlowEffect(EffectBase):
 
         blended = blend_func(bg, fg, self.get_parameter("opacity"))
         return np.clip(blended * 255, 0, 255).astype(np.uint8)
+
+    def get_execution_capabilities(self) -> EffectCapabilities:
+        radius = max(0, int(np.ceil(float(self.get_parameter("radius")) * 3.0)))
+        return EffectCapabilities(locality="local", halo_x=radius, halo_y=radius)

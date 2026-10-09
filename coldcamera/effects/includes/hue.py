@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 
-from coldcamera.classes.effect import EffectBase
+from coldcamera.classes.effect import EffectBase, EffectCapabilities
 from coldcamera.classes.parameter import EffectParam
 from coldcamera.types import Processable
 
@@ -29,3 +29,6 @@ class HueEffect(EffectBase):
         result = cv2.cvtColor(hsv, cv2.COLOR_HSV2RGB)
 
         return result
+
+    def get_execution_capabilities(self) -> EffectCapabilities:
+        return EffectCapabilities(locality="pointwise")
